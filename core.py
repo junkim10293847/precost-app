@@ -203,6 +203,7 @@ def fill_row(it, f, how='수동선택', sc=1.0, cache=None):
                 rec['notes'].append(f'읽기오류: {str(e)[:40]}')
         res, src, sheet, ocr = cache[f]
         rec['ocr'] = ocr
+        rec['sheet'] = sheet
         for k in ('raw', 'sub', 'pack', 'proc', 'margin', 'final'):
             v = res.get(k)
             rec[k] = round(v) if isinstance(v, (int, float)) else None
@@ -541,3 +542,48 @@ def compare_pre_post(rows, post):
                 item['post_margin_rate'] = (price - post_cost) / price
         res.append(item)
     return res
+
+
+# ================================================================ 견적서 미리보기 (검토 화면용)
+def preview_quote(path, sheet=None, max_pages=3, resolution=110):
+    """견적서 원본 미리보기.
+    반환: ('images', [PIL.Image...]) | ('tables', [(시트명, DataFrame)...]) | ('none', 메시지)"""
+    import pandas as pd
+    if not path or not os.path.exists(path):
+        return 'none', '견적서 파일이 없습니다.'
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == '.pdf':
+            import pdfplumber
+            with pdfplumber.open(path) as pdf:
+                return 'images', [p.to_image(resolution=resolution).original for p in pdf.pages[:max_pages]]
+        if ext in ('.png', '.jpg', '.jpeg'):
+            from PIL import Image
+            return 'images', [Image.open(path)]
+        if ext in ('.xlsx', '.xlsm', '.xls'):
+            p = ensure_readable(path)
+            out = []
+            if p.lower().endswith('.xls'):
+                import xlrd
+                wb = xlrd.open_workbook(p)
+                sheets = [(sh.name, [sh.row_values(r) for r in range(sh.nrows)]) for sh in wb.sheets()]
+            else:
+                wb = openpyxl.load_workbook(p, data_only=True)
+                sheets = [(ws.title, [[c for c in row] for row in ws.iter_rows(values_only=True)]) for ws in wb.worksheets]
+            for title, data in sheets:
+                if not data:
+                    continue
+                df = pd.DataFrame(data[:150])
+                df = df.replace('', None).dropna(how='all').dropna(axis=1, how='all')
+                if df.empty:
+                    continue
+                df = df.map(lambda v: (round(v) if abs(v) >= 100 else round(v, 2)) if isinstance(v, float) else v)
+                df.columns = [openpyxl.utils.get_column_letter(int(c) + 1) for c in df.columns]
+                df.index = [int(i) + 1 for i in df.index]
+                out.append((title, df.astype(str).replace({'None': '', 'nan': ''})))
+            # 추출에 쓴 시트를 맨 앞으로
+            out.sort(key=lambda t: (t[0] != sheet, '견본' in t[0]))
+            return 'tables', out
+    except Exception as e:  # noqa
+        return 'none', f'미리보기 오류: {str(e)[:80]}'
+    return 'none', '미리보기를 지원하지 않는 형식입니다.'

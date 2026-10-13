@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 import openpyxl
 
-from core import (read_item_list, collect_files, run, to_excel, read_owner_master, assign_owners,
+from core import (preview_quote, read_item_list, collect_files, run, to_excel, read_owner_master, assign_owners,
                   owner_requests, request_mail, read_postcost, compare_pre_post, reselect_file, refresh_review)
 
 st.set_page_config(page_title='사전원가 자동입력', page_icon='📑', layout='wide')
@@ -125,6 +125,14 @@ if st.button('🚀 자동 입력 실행', type='primary', disabled=not (list_fil
 rows = st.session_state.get('rows')
 if not rows:
     st.stop()
+# 이전 버전 화면에서 넘어온 결과 등 필수 정보가 없으면 다시 실행하도록 안내 (버전 교체 시 오류 방지)
+if 'files' not in st.session_state or any('edits' not in r for r in rows):
+    st.session_state.pop('rows', None)
+    st.info('앱이 새 버전으로 바뀌었습니다. 위에서 파일을 확인하고 🚀 자동 입력 실행을 다시 눌러 주세요.')
+    st.stop()
+st.session_state.setdefault('ver', 0)
+st.session_state.setdefault('cache', {})
+st.session_state.setdefault('post', None)
 
 files = st.session_state['files']
 path_by_name = {os.path.basename(p): p for p in files}
@@ -137,10 +145,134 @@ m[2].metric('🟡 검토 필요', sum(1 for r in rows if r['review']))
 m[3].metric('⚪ 견적서 없음', sum(1 for r in rows if r['status'] == 'X' and not r.get('checked')))
 m[4].metric('✔ 확인완료 체크', sum(1 for r in rows if r.get('checked')))
 
-tab1, tab2, tab3 = st.tabs(['① 자동입력 결과 · 수정/저장', '② 담당자별 요청 메일', '③ 사전 vs 사후원가'])
+tab0, tab1, tab2, tab3 = st.tabs(['🔍 한 건씩 검토 (견적서 비교)', '📋 전체 표 · 일괄 수정', '✉️ 담당자별 요청 메일', '📊 사전 vs 사후원가'])
 
 NUM = ['원재료비', '부원료비', '부재료비', '가공비', '마진', '최종견적']
 KEY = {'원재료비': 'raw', '부원료비': 'sub', '부재료비': 'pack', '가공비': 'proc', '마진': 'margin', '최종견적': 'final'}
+
+
+def _ival(v):
+    return None if v is None or (isinstance(v, float) and pd.isna(v)) else int(v)
+
+
+with tab0:
+    if st.session_state.get('saved_msg'):
+        st.success(st.session_state['saved_msg'])
+    flt = st.radio('대상', ['🟡 검토 필요', '⚪ 견적서 없음', '✔ 확인완료', '전체'], horizontal=True, key='rv_filter')
+    cond = {'🟡 검토 필요': lambda r: r['review'],
+            '⚪ 견적서 없음': lambda r: r['status'] == 'X' and not r.get('checked'),
+            '✔ 확인완료': lambda r: r.get('checked'),
+            '전체': lambda r: True}[flt]
+    idxs = [i for i, r in enumerate(rows) if cond(r)]
+    if not idxs:
+        st.success('해당하는 품목이 없습니다. 👍')
+    else:
+        pos = st.session_state.get('rv_pos', 0)
+        pos = min(pos, len(idxs) - 1)
+        labels = [f"[{rows[i]['no']}] {rows[i]['name'][:40]}" for i in idxs]
+        nav1, nav2, nav3 = st.columns([1, 6, 1])
+        if nav1.button('◀ 이전', disabled=pos == 0, use_container_width=True):
+            st.session_state['rv_pos'] = pos - 1
+            st.rerun()
+        sel = nav2.selectbox(f'품목 ({pos + 1} / {len(idxs)})', range(len(idxs)), index=pos,
+                             format_func=lambda k: labels[k], label_visibility='collapsed')
+        if sel != pos:
+            st.session_state['rv_pos'] = sel
+            st.rerun()
+        if nav3.button('다음 ▶', disabled=pos >= len(idxs) - 1, use_container_width=True):
+            st.session_state['rv_pos'] = pos + 1
+            st.rerun()
+
+        i = idxs[pos]
+        r = rows[i]
+        left, right = st.columns([2, 3], gap='large')
+        with left:
+            st.markdown(f"#### [{r['no']}] {r['name']}")
+            st.caption(f"거래처 **{r['customer'] or '-'}** · LOT {r['lot'] or '-'} · 규격 {r['spec'] or '-'} · "
+                       f"단가 **{(r['price'] or 0):,.0f}원** · 담당자 {r.get('owner') or '-'}")
+            for note in dict.fromkeys(r.get('edits', []) + r['notes']):
+                (st.warning if ('확인필요' in note or '미추출' in note or 'OCR' in note or '불일치' in note)
+                 else st.info)(note, icon='📝')
+            ver = st.session_state['ver']
+            with st.form(f'rv_{i}_{ver}'):
+                c_a, c_b = st.columns(2)
+                vals = {}
+                for j, col in enumerate(NUM):
+                    vals[col] = (c_a if j % 2 == 0 else c_b).number_input(
+                        col, value=_ival(r[KEY[col]]), step=1, format='%d', key=f'rv_{col}_{i}_{ver}')
+                cost = sum(v or 0 for k, v in vals.items() if k not in ('마진', '최종견적'))
+                st.caption(f"제조원가 {cost:,.0f} + 마진 {(vals['마진'] or 0):,.0f} = {cost + (vals['마진'] or 0):,.0f}  "
+                           f"│ 최종견적 {(vals['최종견적'] or 0):,.0f}  │ 단가-견적 "
+                           f"{((r['price'] or 0) - (vals['최종견적'] or 0)):+,.0f}")
+                owner = st.text_input('담당자', value=r.get('owner') or '', key=f'rv_own_{i}_{ver}')
+                ox = st.radio('O/X', ['O', 'X'], index=0 if r['status'] == 'O' else 1, horizontal=True,
+                              key=f'rv_ox_{i}_{ver}')
+                chk = st.checkbox('✔ 견적서와 대조해 확인 완료', value=bool(r.get('checked')), key=f'rv_chk_{i}_{ver}')
+                b1, b2 = st.columns(2)
+                save_one = b1.form_submit_button('💾 저장', use_container_width=True)
+                save_next = b2.form_submit_button('💾 저장 후 다음 ▶', type='primary', use_container_width=True)
+            if save_one or save_next:
+                ch = []
+                for col in NUM:
+                    nv, ov = _ival(vals[col]), _ival(r[KEY[col]])
+                    if nv != ov:
+                        r[KEY[col]] = nv
+                        ch.append(f"{col} {ov if ov is not None else '-'}→{nv if nv is not None else '-'}")
+                if ox != r['status']:
+                    ch.append(f"O/X {r['status']}→{ox}")
+                    r['status'] = ox
+                if owner.strip() and owner.strip() != (r.get('owner') or ''):
+                    r['owner'], r['owner_src'] = owner.strip(), '수동'
+                    ch.append(f'담당자→{owner.strip()}')
+                r.setdefault('edits', []).extend(ch)
+                r['checked'] = chk
+                refresh_review(r)
+                st.session_state['ver'] += 1
+                st.session_state['saved_msg'] = f"[{r['no']}] 저장 완료" + (f" — {', '.join(ch)}" if ch else '') + \
+                    (' · 확인완료' if chk else '')
+                if save_next:
+                    # 확인완료로 목록에서 빠지면 같은 위치가 곧 다음 품목
+                    still = cond(r)
+                    st.session_state['rv_pos'] = pos + 1 if still else pos
+                st.rerun()
+
+            with st.expander('📎 다른 견적서 파일로 바꾸기'):
+                cur = r['file'] or ''
+                opts = [''] + sorted(path_by_name)
+                newf = st.selectbox('견적서 파일', opts, index=opts.index(cur) if cur in opts else 0,
+                                    key=f'rv_file_{i}_{st.session_state["ver"]}')
+                if st.button('이 파일로 다시 읽기', disabled=newf == cur, key=f'rv_refile_{i}'):
+                    rows[i] = reselect_file(r, path_by_name.get(newf), st.session_state['cache'])
+                    st.session_state['ver'] += 1
+                    st.session_state['saved_msg'] = f"[{r['no']}] 견적서를 '{newf or '없음'}'로 바꿔 다시 읽었습니다."
+                    st.rerun()
+
+        with right:
+            fpath = path_by_name.get(r['file']) if r['file'] else None
+            st.markdown(f"#### 📄 견적서 원본")
+            if not fpath:
+                st.info('매칭된 견적서가 없습니다. 왼쪽 "다른 견적서 파일로 바꾸기"에서 고를 수 있습니다.')
+            else:
+                st.caption(r['file'])
+                with open(fpath, 'rb') as fh:
+                    st.download_button('⬇ 원본 파일 열기(다운로드)', fh.read(), file_name=r['file'], key=f'dl_{i}')
+                kind, data = preview_quote(fpath, r.get('sheet'))
+                if kind == 'images':
+                    zoom = st.slider('확대', 50, 200, 100, 10, key='rv_zoom', format='%d%%')
+                    for im in data:
+                        st.image(im, width=int(700 * zoom / 100))
+                elif kind == 'tables':
+                    names = [t for t, _ in data]
+                    shn = st.selectbox('시트', names, index=0, key=f'rv_sheet_{i}')
+                    df_s = dict(data)[shn]
+                    kw = ('합계', '합 계', '원가', '마진', '이익', '출고', '견적가', '원재료', '부재료', '가공', '자재비')
+                    st.dataframe(df_s.style.apply(
+                        lambda row: ['background-color:#FFF2CC' if any(k in ' '.join(row.values) for k in kw) else ''
+                                     for _ in row], axis=1),
+                        use_container_width=True, height=620)
+                    st.caption('노란 줄 = 합계·원가·마진·출고가 등 금액 줄')
+                else:
+                    st.warning(data)
 
 with tab1:
     if st.session_state.get('saved_msg'):
@@ -158,7 +290,8 @@ with tab1:
     f1, f2 = st.columns([1, 3])
     only = f1.toggle('검토 필요·견적서 없음만 보기', value=False)
     f2.caption('① 숫자·담당자·O/X를 고치거나 ② **매칭 견적서**를 다른 파일로 바꾸고(그 파일로 다시 읽음) '
-               '③ 맞으면 **확인** 체크 → 반드시 **💾 저장**을 눌러야 아래 엑셀 다운로드에 반영됩니다.')
+               '③ 맞으면 **확인** 체크 → 반드시 **💾 저장**을 눌러야 아래 엑셀 다운로드에 반영됩니다. '
+               '표 오른쪽 위 ⛶ 버튼을 누르면 전체 화면으로 볼 수 있습니다. 한 건씩 비교하려면 🔍 탭을 쓰세요.')
     view = df[df['구분'].isin(['🟡', '⚪'])] if only else df
 
     with st.form(f"edit_{st.session_state['ver']}"):
@@ -171,7 +304,10 @@ with tab1:
                 '매칭 견적서': st.column_config.SelectboxColumn(
                     '매칭 견적서', options=[''] + sorted(path_by_name), width='large',
                     help='다른 견적서를 고르면 저장 시 그 파일로 다시 추출합니다'),
-                **{k: st.column_config.NumberColumn(k, format='%d', step=1) for k in ['단가'] + NUM},
+                **{k: st.column_config.NumberColumn(k, format='%d', step=1, width='small') for k in ['단가'] + NUM},
+                'no': st.column_config.NumberColumn('no', width='small'),
+                '구분': st.column_config.TextColumn('구분', width='small'),
+                '메모': st.column_config.TextColumn('메모', width='medium'),
             })
         save = st.form_submit_button('💾 저장 (수정·확인 내용 반영)', type='primary')
 
