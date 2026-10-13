@@ -204,9 +204,10 @@ def fill_row(it, f, how='수동선택', sc=1.0, cache=None):
         res, src, sheet, ocr = cache[f]
         rec['ocr'] = ocr
         rec['sheet'] = sheet
-        for k in ('raw', 'sub', 'pack', 'proc', 'margin', 'final'):
+        for k in ('raw', 'pack', 'proc', 'margin', 'final'):
             v = res.get(k)
             rec[k] = round(v) if isinstance(v, (int, float)) else None
+        rec['sub'] = None   # 부원료비는 사용하지 않음
         rec['computed'] = res.get('_computed_final')
         rec['src'] = src
         miss = [lbl for k, lbl in (('raw', '원재료비'), ('pack', '부재료비'), ('proc', '가공비'), ('final', '최종견적'))
@@ -269,12 +270,12 @@ def reselect_file(rec, path, cache=None):
 
 
 # ---------------------------------------------------------------- 엑셀 출력 (->영업요청 형식)
-HEAD = ['no', '제품명', 'LOT', '거래처', '단가', '규격', '담당자', 'O/X', '비고', '원재료비', '부원료비',
-        '부재료비', '가공비', '제조원가', '마진', '출고가', '최종견적', '+/-조정', '조정이익', '검증', '비고', 'F-R',
+HEAD = ['no', '제품명', 'LOT', '거래처', '단가', '규격', '담당자', 'O/X', '비고', '원재료비',
+        '부재료비', '가공비', '제조원가', '마진', '출고가', '최종견적', '+/-조정', '조정이익', '검증', '비고', 'F-Q',
         '매칭 견적서 파일', '매칭방식', '자동검토 메모']
 
 
-def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, period='이번 달'):
+def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, period='', requests_sheet=False):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '->영업요청'
@@ -298,16 +299,16 @@ def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, peri
         L = lambda col: f'{col}{n}'  # noqa
         ws.cell(n, 1, r.get('tag'))
         vals = [r['no'], r['name'], r['lot'], r['customer'], r['price'], r['spec'], (r.get('owner') if r.get('owner') != '미지정' else None), r['status'],
-                None, r['raw'], r['sub'], r['pack'], r['proc'], f'=SUM({L("K")}:{L("N")})', r['margin'],
-                f'=+{L("O")}+{L("P")}', r['final'] if r['status'] == 'O' else f'=+{L("F")}',
-                f'=+{L("Q")}-{L("R")}', f'=+{L("R")}-{L("O")}', f'=+{L("O")}+{L("P")}-{L("S")}={L("R")}',
-                '견적서없음' if r['status'] == 'X' else None, f'=+{L("F")}-{L("R")}',
+                None, r['raw'], r['pack'], r['proc'], f'=SUM({L("K")}:{L("M")})', r['margin'],
+                f'=+{L("N")}+{L("O")}', r['final'] if r['status'] == 'O' else f'=+{L("F")}',
+                f'=+{L("P")}-{L("Q")}', f'=+{L("Q")}-{L("N")}', f'=+{L("N")}+{L("O")}-{L("R")}={L("Q")}',
+                '견적서없음' if r['status'] == 'X' else None, f'=+{L("F")}-{L("Q")}',
                 r['file'], r['match'],
                 ' / '.join(dict.fromkeys((['✔확인완료'] if r.get('checked') else []) + r.get('edits', []) + r['notes']))]
         for j, v in enumerate(vals, start=2):
             c = ws.cell(n, j, v)
             c.border = bd
-            if j in (6, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23):
+            if j in (6, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22):
                 c.number_format = '#,##0'
             if r['status'] == 'X' and not r.get('checked'):
                 c.fill = grey
@@ -315,12 +316,12 @@ def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, peri
                 c.fill = green
             elif r['review']:
                 c.fill = yellow
-    widths = dict(A=8, B=5, C=38, D=11, E=16, F=9, G=6, H=8, I=5, J=8, K=9, L=8, M=9, N=9, O=9, P=8, Q=9, R=9,
-                  S=8, T=8, U=8, V=10, W=8, X=42, Y=22, Z=44)
+    widths = dict(A=8, B=5, C=38, D=11, E=16, F=9, G=6, H=8, I=5, J=8, K=9, L=9, M=9, N=9, O=8, P=9, Q=9,
+                  R=8, S=8, T=8, U=10, V=8, W=42, X=22, Y=44)
     for k, w in widths.items():
         ws.column_dimensions[k].width = w
     ws.freeze_panes = 'D5'
-    ws.auto_filter.ref = f'B4:Z{4 + len(rows)}'
+    ws.auto_filter.ref = f'B4:Y{4 + len(rows)}'
     hdr_style = lambda c: (setattr(c, 'font', Font(bold=True, color='FFFFFF')),  # noqa
                            setattr(c, 'fill', PatternFill('solid', fgColor='1F4E78')),
                            setattr(c, 'alignment', Alignment(horizontal='center', wrap_text=True)))
@@ -328,7 +329,7 @@ def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, peri
     # ---- 담당자별 요청
     reqs = owner_requests(rows)
     w2 = wb.create_sheet('담당자별 요청')
-    w2['A1'] = f'{period} 사전원가 — 담당자별 견적서 요청 목록'
+    w2['A1'] = f'{period} 사전원가 — 담당자별 견적서 요청 목록'.strip()
     w2['A1'].font = Font(bold=True, size=13)
     h2 = ['담당자', 'no', '제품명', '거래처', 'LOT', '요청 사유', '담당자 근거']
     for j, h in enumerate(h2, 1):
@@ -346,7 +347,7 @@ def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, peri
     # ---- 사전 vs 사후
     if compare:
         w3 = wb.create_sheet('사전vs사후')
-        w3['A1'] = f'{period} 사전원가(견적) vs 사후원가(실적) — 단위당 원'
+        w3['A1'] = f'{period} 사전원가(견적) vs 사후원가(실적) — 단위당 원'.strip()
         w3['A1'].font = Font(bold=True, size=13)
         h3 = ['no', '제품명', '거래처', 'LOT', '담당자', '최종견적', '사전 원재료', '사후 원재료', '사전 부재료',
               '사후 부재료', '사전 가공비', '사후 가공비', '사전 원가계', '사후 원가계', '차이(사후-사전)', '차이율',
@@ -373,6 +374,8 @@ def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, peri
         for k, w in dict(A=6, B=36, C=16, D=11, E=8).items():
             w3.column_dimensions[k].width = w
         w3.freeze_panes = 'C4'
+    if not requests_sheet:
+        del wb['담당자별 요청']
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
@@ -526,7 +529,7 @@ def compare_pre_post(rows, post):
         how = 'LOT'
         if p is None:
             p, how = post.get('__name__' + _norm_key(r['name'])), '제품명'
-        pre_cost = sum(r[k] or 0 for k in ('raw', 'sub', 'pack', 'proc')) if r['status'] == 'O' else None
+        pre_cost = sum(r[k] or 0 for k in ('raw', 'pack', 'proc')) if r['status'] == 'O' else None
         item = dict(no=r['no'], name=r['name'], customer=r['customer'], lot=r['lot'], owner=r.get('owner'),
                     final=r['final'], pre_raw=r['raw'], pre_pack=r['pack'], pre_proc=r['proc'], pre_cost=pre_cost,
                     match=how if p else '사후원가 없음')

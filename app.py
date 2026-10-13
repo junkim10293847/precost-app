@@ -2,13 +2,13 @@
 실행: streamlit run app.py
 로그인 계정은 Streamlit Cloud → App settings → Secrets 에 등록 (README 참고)
 """
-import io, os, hmac, hashlib, tempfile, urllib.parse
+import io, os, hmac, hashlib, tempfile
 import pandas as pd
 import streamlit as st
 import openpyxl
 
 from core import (preview_quote, read_item_list, collect_files, run, to_excel, read_owner_master, assign_owners,
-                  owner_requests, request_mail, read_postcost, compare_pre_post, reselect_file, refresh_review)
+                  read_postcost, compare_pre_post, reselect_file, refresh_review)
 
 st.set_page_config(page_title='사전원가 자동입력', page_icon='📑', layout='wide')
 
@@ -53,6 +53,19 @@ def login_gate():
 
 login_gate()
 
+
+def guess_period(name):
+    """파일명에서 대상 월 추정: '26.06 ...' → '2026년 6월' (없으면 빈 값)"""
+    import re
+    m = re.search(r'(20\d{2})\s*[.\-_년]\s*(\d{1,2})(?!\d)', name or '') or \
+        re.search(r'(?<!\d)(\d{2})\s*[.\-_]\s*(\d{1,2})(?!\d)', name or '')
+    if not m:
+        return ''
+    y, mth = m.group(1), int(m.group(2))
+    if not 1 <= mth <= 12:
+        return ''
+    return f"{('20' + y) if len(y) == 2 else y}년 {mth}월"
+
 # ================================================================ 화면
 st.title('📑 사전원가 자동입력')
 st.caption('요청 품목 목록 + 견적서(zip) → 원가 자동입력 · 화면에서 수정/확인 후 저장 · 담당자별 요청 메일 · 사전/사후원가 비교')
@@ -68,11 +81,8 @@ with st.sidebar:
     st.markdown(
         '1. **요청 품목 목록** 엑셀\n2. **견적서** zip 또는 여러 파일\n'
         '3. (선택) **지난달 결과 파일** → 담당자 자동 배정\n4. (선택) **사후원가 파일** → 사전/사후 비교\n'
-        '5. 실행 → 노란 행 수정·**확인 체크** → **💾 저장** → 다운로드\n\n'
+        '5. 실행 → 📋 전체 표 확인 → 🔍 견적서 비교로 노란 행 확인·저장 → 다운로드\n\n'
         '**파일명 규칙**: 견적서 파일명 앞에 목록 번호 (예: `29. 테아닌.xlsx`, `82~85.`)')
-    period = st.text_input('대상 월', value='2026년 7월')
-    sender = st.text_input('발신 부서', value='재무지원팀')
-    due = st.text_input('회신 기한(선택)', value='')
     match_mode = st.radio('견적서 매칭 방식', ['파일번호 + 품목명 (권장)', '품목명만 (번호 없는 파일)'], index=0)
 
 c1, c2 = st.columns(2)
@@ -105,6 +115,7 @@ if st.button('🚀 자동 입력 실행', type='primary', disabled=not (list_fil
         st.error(f'목록을 읽지 못했습니다: {e}')
         st.stop()
     files = collect_files([(f.name, f.getvalue()) for f in quote_files], tempfile.mkdtemp())
+    st.session_state['period'] = guess_period(list_file.name) or guess_period(' '.join(f.name for f in quote_files))
     bar = st.progress(0.0, text='준비 중…')
     rows = run(items, files, progress=lambda i, n, nm: bar.progress(i / n, text=f'{i}/{n} · {nm[:30]}'),
                use_numbers=match_mode.startswith('파일번호'))
@@ -145,10 +156,10 @@ m[2].metric('🟡 검토 필요', sum(1 for r in rows if r['review']))
 m[3].metric('⚪ 견적서 없음', sum(1 for r in rows if r['status'] == 'X' and not r.get('checked')))
 m[4].metric('✔ 확인완료 체크', sum(1 for r in rows if r.get('checked')))
 
-tab0, tab1, tab2, tab3 = st.tabs(['🔍 한 건씩 검토 (견적서 비교)', '📋 전체 표 · 일괄 수정', '✉️ 담당자별 요청 메일', '📊 사전 vs 사후원가'])
+tab1, tab0, tab3 = st.tabs(['📋 전체 표 · 일괄 수정', '🔍 견적서 비교 (한 건씩 검토)', '📊 사전 vs 사후원가'])
 
-NUM = ['원재료비', '부원료비', '부재료비', '가공비', '마진', '최종견적']
-KEY = {'원재료비': 'raw', '부원료비': 'sub', '부재료비': 'pack', '가공비': 'proc', '마진': 'margin', '최종견적': 'final'}
+NUM = ['원재료비', '부재료비', '가공비', '마진', '최종견적']
+KEY = {'원재료비': 'raw', '부재료비': 'pack', '가공비': 'proc', '마진': 'margin', '최종견적': 'final'}
 
 
 def _ival(v):
@@ -281,7 +292,7 @@ with tab1:
         '확인': bool(r.get('checked')),
         '구분': ('✔' if r.get('checked') else '⚪' if r['status'] == 'X' else '🟡' if r['review'] else '✅'),
         'no': r['no'], '제품명': r['name'], '거래처': r['customer'], '담당자': r.get('owner'), '단가': r['price'],
-        '원재료비': r['raw'], '부원료비': r['sub'], '부재료비': r['pack'], '가공비': r['proc'],
+        '원재료비': r['raw'], '부재료비': r['pack'], '가공비': r['proc'],
         '마진': r['margin'], '최종견적': r['final'], 'O/X': r['status'],
         '매칭 견적서': r['file'] or '',
         '메모': ' / '.join(dict.fromkeys(r.get('edits', []) + r['notes'])),
@@ -291,7 +302,7 @@ with tab1:
     only = f1.toggle('검토 필요·견적서 없음만 보기', value=False)
     f2.caption('① 숫자·담당자·O/X를 고치거나 ② **매칭 견적서**를 다른 파일로 바꾸고(그 파일로 다시 읽음) '
                '③ 맞으면 **확인** 체크 → 반드시 **💾 저장**을 눌러야 아래 엑셀 다운로드에 반영됩니다. '
-               '표 오른쪽 위 ⛶ 버튼을 누르면 전체 화면으로 볼 수 있습니다. 한 건씩 비교하려면 🔍 탭을 쓰세요.')
+               '표 오른쪽 위 ⛶ 버튼을 누르면 전체 화면으로 볼 수 있습니다. 견적서와 한 건씩 비교하려면 🔍 견적서 비교 탭을 쓰세요.')
     view = df[df['구분'].isin(['🟡', '⚪'])] if only else df
 
     with st.form(f"edit_{st.session_state['ver']}"):
@@ -350,22 +361,6 @@ with tab1:
                                          f'엑셀 다운로드에 반영되었습니다.')
         st.rerun()
 
-with tab2:
-    reqs = owner_requests(rows)
-    if not reqs:
-        st.success('요청할 품목이 없습니다.')
-    st.caption('확인 체크한 품목은 요청 대상에서 빠집니다. 이메일을 넣으면 [메일 쓰기]로 메일 프로그램이 열립니다(자동 발송 없음).')
-    emails = st.session_state.setdefault('emails', {})
-    for owner, lst in reqs.items():
-        subj, body = request_mail(owner, lst, period, sender, due or None)
-        with st.expander(f'{owner} — {len(lst)}건', expanded=False):
-            emails[owner] = st.text_input('이메일', value=emails.get(owner, ''), key=f'em_{owner}')
-            st.text_input('제목', value=subj, key=f'sj_{owner}')
-            st.text_area('본문', value=body, height=260, key=f'bd_{owner}')
-            if emails[owner]:
-                url = f"mailto:{emails[owner]}?subject={urllib.parse.quote(subj)}&body={urllib.parse.quote(body)}"
-                st.link_button('✉️ 메일 쓰기', url)
-
 post = st.session_state.get('post')
 cmp = compare_pre_post(rows, post) if post else None
 with tab3:
@@ -390,9 +385,10 @@ with tab3:
                      hide_index=True, height=480)
 
 st.divider()
-title = f'{period} 사전원가 요청 품목 목록 (자동입력)'
+period = st.session_state.get('period', '')
+title = (f'{period} ' if period else '') + '사전원가 요청 품목 목록 (자동입력)'
 st.caption('💾 저장한 내용까지 반영됩니다. 표에서 고친 뒤 저장을 누르지 않으면 반영되지 않습니다.')
-st.download_button('📥 엑셀 다운로드 (->영업요청 · 담당자별 요청 · 사전vs사후)',
+st.download_button('📥 엑셀 다운로드',
                    data=to_excel(rows, title, compare=cmp, period=period),
                    file_name=f'{title}.xlsx', type='primary',
                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
