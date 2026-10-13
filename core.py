@@ -187,56 +187,84 @@ def ensure_readable(path):
 
 
 # ---------------------------------------------------------------- 실행
+def fill_row(it, f, how='수동선택', sc=1.0, cache=None):
+    """품목 1행 + 견적서 파일 1개 → 결과 레코드"""
+    cache = {} if cache is None else cache
+    rec = dict(it)
+    rec.update(file=os.path.basename(f) if f else '', file_path=f, match=how, match_score=sc, ocr=False,
+               raw=None, sub=None, pack=None, proc=None, margin=None, final=None, computed=None, notes=[],
+               checked=False, edits=[])
+    if f:
+        if f not in cache:
+            try:
+                cache[f] = extract_file(ensure_readable(f))
+            except Exception as e:  # noqa
+                cache[f] = ({}, {}, None, False)
+                rec['notes'].append(f'읽기오류: {str(e)[:40]}')
+        res, src, sheet, ocr = cache[f]
+        rec['ocr'] = ocr
+        for k in ('raw', 'sub', 'pack', 'proc', 'margin', 'final'):
+            v = res.get(k)
+            rec[k] = round(v) if isinstance(v, (int, float)) else None
+        rec['computed'] = res.get('_computed_final')
+        rec['src'] = src
+        miss = [lbl for k, lbl in (('raw', '원재료비'), ('pack', '부재료비'), ('proc', '가공비'), ('final', '최종견적'))
+                if rec[k] is None]
+        if miss:
+            rec['notes'].append('미추출:' + '/'.join(miss))
+        if ocr:
+            rec['notes'].append('스캔/이미지(OCR) - 확인필요')
+        fs = spec_counts(os.path.basename(f))
+        if isinstance(it.get('spec'), (int, float)) and it['spec'] and fs and int(it['spec']) not in fs:
+            rec['notes'].append(f"규격 상이-확인필요(목록 {int(it['spec'])} / 견적서 {'·'.join(map(str, sorted(fs)))})")
+        if all(rec[k] is not None for k in ('raw', 'pack', 'proc', 'final')):
+            base = rec['raw'] + rec['pack'] + rec['proc'] + (rec['margin'] or 0)
+            if rec['sub'] and abs(rec['final'] - base) <= abs(rec['final'] - base - rec['sub']):
+                rec['sub'] = None   # 요약표 옆 참고계산값 → 부원료비 아님
+            gap = rec['final'] - base - (rec['sub'] or 0)
+            if abs(gap) > max(30, rec['final'] * 0.02):
+                rec['notes'].append(f'참고: 견적조정 {gap:+,.0f}')
+        if isinstance(it.get('price'), (int, float)) and rec['final'] and abs(it['price'] - rec['final']) >= 1:
+            rec['notes'].append(f"참고: 단가-견적 {it['price'] - rec['final']:+,.0f}")
+    rec['status'] = 'O' if f else 'X'
+    if not f:
+        rec['notes'].append('견적서없음')
+    if '확인' in how or '불일치' in how:
+        rec['notes'].append(how)
+    refresh_review(rec)
+    return rec
+
+
+def refresh_review(rec):
+    rec['review'] = (not rec.get('checked')) and rec['status'] == 'O' and any(
+        k in ' '.join(rec['notes']) for k in ('미추출', 'OCR', '불일치', '확인필요', '오류'))
+    return rec
+
+
 def run(items, files, progress=None, use_numbers=True):
     matches = match_items(items, files, use_numbers=use_numbers)
     cache, rows = {}, []
     for i, (it, (f, sc, how)) in enumerate(zip(items, matches)):
         if progress:
             progress(i + 1, len(items), it['name'])
-        rec = dict(it)
-        rec.update(file=os.path.basename(f) if f else '', match=how, match_score=sc, ocr=False,
-                   raw=None, sub=None, pack=None, proc=None, margin=None, final=None, computed=None, notes=[])
-        if f:
-            if f not in cache:
-                try:
-                    cache[f] = extract_file(ensure_readable(f))
-                except Exception as e:  # noqa
-                    cache[f] = ({}, {}, None, False)
-                    rec['notes'].append(f'읽기오류: {str(e)[:40]}')
-            res, src, sheet, ocr = cache[f]
-            rec['ocr'] = ocr
-            for k in ('raw', 'sub', 'pack', 'proc', 'margin', 'final'):
-                v = res.get(k)
-                rec[k] = round(v) if isinstance(v, (int, float)) else None
-            rec['computed'] = res.get('_computed_final')
-            rec['src'] = src
-            miss = [lbl for k, lbl in (('raw', '원재료비'), ('pack', '부재료비'), ('proc', '가공비'), ('final', '최종견적'))
-                    if rec[k] is None]
-            if miss:
-                rec['notes'].append('미추출:' + '/'.join(miss))
-            if ocr:
-                rec['notes'].append('스캔/이미지(OCR) - 확인필요')
-            fs = spec_counts(os.path.basename(f))
-            if isinstance(it.get('spec'), (int, float)) and it['spec'] and fs and int(it['spec']) not in fs:
-                rec['notes'].append(f"규격 상이-확인필요(목록 {int(it['spec'])} / 견적서 {'·'.join(map(str, sorted(fs)))})")
-            if all(rec[k] is not None for k in ('raw', 'pack', 'proc', 'final')):
-                base = rec['raw'] + rec['pack'] + rec['proc'] + (rec['margin'] or 0)
-                if rec['sub'] and abs(rec['final'] - base) <= abs(rec['final'] - base - rec['sub']):
-                    rec['sub'] = None   # 요약표 옆 참고계산값 → 부원료비 아님
-                gap = rec['final'] - base - (rec['sub'] or 0)
-                if abs(gap) > max(30, rec['final'] * 0.02):
-                    rec['notes'].append(f'참고: 견적조정 {gap:+,.0f}')
-            if isinstance(it.get('price'), (int, float)) and rec['final'] and abs(it['price'] - rec['final']) >= 1:
-                rec['notes'].append(f"참고: 단가-견적 {it['price'] - rec['final']:+,.0f}")
-        rec['status'] = 'O' if f else 'X'
-        if not f:
-            rec['notes'].append('견적서없음')
-        if '확인' in how or '불일치' in how:
-            rec['notes'].append(how)
-        rec['review'] = bool(rec['notes']) and rec['status'] == 'O' and any(
-            k in ' '.join(rec['notes']) for k in ('미추출', 'OCR', '불일치', '확인', '오류'))
-        rows.append(rec)
+        rows.append(fill_row(it, f, how, sc, cache))
     return rows
+
+
+ITEM_KEYS = ('row', 'no', 'name', 'lot', 'customer', 'price', 'spec', 'owner', 'tag')
+
+
+def reselect_file(rec, path, cache=None):
+    """사용자가 견적서 파일을 다시 고른 경우 해당 파일로 재추출 (담당자·확인 상태는 유지)"""
+    it = {k: rec.get(k) for k in ITEM_KEYS}
+    new = fill_row(it, path, '수동선택' if path else '견적서없음', 1.0, cache)
+    new['owner_src'] = rec.get('owner_src', '')
+    new['edits'] = rec.get('edits', []) + [f"견적서 변경: {rec.get('file') or '없음'} → {new['file'] or '없음'}"]
+    if isinstance(it.get('price'), (int, float)) and it['price'] and new['final'] and \
+            abs(it['price'] - new['final']) / it['price'] > 0.1:
+        new['notes'].append('수동선택 견적서의 견적가가 단가와 10% 이상 차이-확인필요')
+        refresh_review(new)
+    return new
 
 
 # ---------------------------------------------------------------- 엑셀 출력 (->영업요청 형식)
@@ -253,7 +281,7 @@ def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, peri
     bd = Border(left=thin, right=thin, top=thin, bottom=thin)
     ws['B2'] = title
     ws['B2'].font = Font(bold=True, size=14)
-    ws['H3'] = '* 견적서 파일에서 자동 추출 (노란색 = 검토 필요, 회색 = 견적서 없음)'
+    ws['H3'] = '* 견적서 파일에서 자동 추출 (노란색 = 검토 필요, 회색 = 견적서 없음, 연두색 = 담당자 확인완료)'
     ws['H3'].font = Font(color='C00000', size=9)
     for j, h in enumerate(HEAD, start=2):
         c = ws.cell(4, j, h)
@@ -263,6 +291,7 @@ def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, peri
         c.border = bd
     yellow = PatternFill('solid', fgColor='FFF2CC')
     grey = PatternFill('solid', fgColor='EDEDED')
+    green = PatternFill('solid', fgColor='E2EFDA')
     for i, r in enumerate(rows):
         n = 5 + i
         L = lambda col: f'{col}{n}'  # noqa
@@ -272,14 +301,17 @@ def to_excel(rows, title='사전원가 요청 품목 목록', compare=None, peri
                 f'=+{L("O")}+{L("P")}', r['final'] if r['status'] == 'O' else f'=+{L("F")}',
                 f'=+{L("Q")}-{L("R")}', f'=+{L("R")}-{L("O")}', f'=+{L("O")}+{L("P")}-{L("S")}={L("R")}',
                 '견적서없음' if r['status'] == 'X' else None, f'=+{L("F")}-{L("R")}',
-                r['file'], r['match'], ' / '.join(dict.fromkeys(r['notes']))]
+                r['file'], r['match'],
+                ' / '.join(dict.fromkeys((['✔확인완료'] if r.get('checked') else []) + r.get('edits', []) + r['notes']))]
         for j, v in enumerate(vals, start=2):
             c = ws.cell(n, j, v)
             c.border = bd
             if j in (6, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23):
                 c.number_format = '#,##0'
-            if r['status'] == 'X':
+            if r['status'] == 'X' and not r.get('checked'):
                 c.fill = grey
+            elif r.get('checked'):
+                c.fill = green
             elif r['review']:
                 c.fill = yellow
     widths = dict(A=8, B=5, C=38, D=11, E=16, F=9, G=6, H=8, I=5, J=8, K=9, L=8, M=9, N=9, O=9, P=8, Q=9, R=9,
@@ -395,6 +427,8 @@ def assign_owners(rows, master):
 
 def needs_request(r):
     """영업 담당자에게 요청해야 할 행: 견적서 없음 / 값 미추출 / 스캔본 / 매칭 의심"""
+    if r.get('checked'):
+        return None
     if r['status'] == 'X':
         return '견적서 미제출'
     t = ' '.join(r['notes'])
