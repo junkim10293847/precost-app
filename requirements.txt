@@ -1,0 +1,7 @@
+streamlit>=1.36
+pandas
+openpyxl
+xlrd==2.0.1
+pdfplumber
+pytesseract
+Pillow
