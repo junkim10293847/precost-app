@@ -593,3 +593,10 @@ def preview_quote(path, sheet=None, max_pages=3, resolution=110):
     except Exception as e:  # noqa
         return 'none', f'미리보기 오류: {str(e)[:80]}'
     return 'none', '미리보기를 지원하지 않는 형식입니다.'
+
+
+# ================================================================ 시작 파일 보호
+# Streamlit Cloud 에서 Main file 을 core.py 로 지정해도 app.py 화면이 뜨도록 연결
+if __name__ == '__main__':
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.py'), run_name='__main__')
