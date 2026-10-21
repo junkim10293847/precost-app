@@ -557,9 +557,12 @@ def preview_quote(path, sheet=None, max_pages=3, resolution=110):
     ext = os.path.splitext(path)[1].lower()
     try:
         if ext == '.pdf':
-            import pdfplumber
-            with pdfplumber.open(path) as pdf:
-                return 'images', [p.to_image(resolution=resolution).original for p in pdf.pages[:max_pages]]
+            from PIL import Image
+            from extractor import pdf_to_pngs
+            pngs = pdf_to_pngs(path, resolution, max_pages, timeout=60)
+            if not pngs:
+                return 'none', 'PDF 미리보기를 만들지 못했습니다. "원본 파일 열기"로 확인해 주세요.'
+            return 'images', [Image.open(p) for p in pngs]
         if ext in ('.png', '.jpg', '.jpeg'):
             from PIL import Image
             return 'images', [Image.open(path)]
@@ -571,8 +574,8 @@ def preview_quote(path, sheet=None, max_pages=3, resolution=110):
                 wb = xlrd.open_workbook(p)
                 sheets = [(sh.name, [sh.row_values(r) for r in range(sh.nrows)]) for sh in wb.sheets()]
             else:
-                wb = openpyxl.load_workbook(p, data_only=True)
-                sheets = [(ws.title, [[c for c in row] for row in ws.iter_rows(values_only=True)]) for ws in wb.worksheets]
+                wb = openpyxl.load_workbook(p, data_only=True, read_only=True)
+                sheets = [(ws.title, [list(row) for _, row in zip(range(150), ws.iter_rows(values_only=True))]) for ws in wb.worksheets]
             for title, data in sheets:
                 if not data:
                     continue

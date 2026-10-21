@@ -26,9 +26,12 @@ def norm(s):
 
 # ---------- 파일 → 행(row) 토큰 리스트 ----------
 def rows_from_xlsx(path):
-    wb = openpyxl.load_workbook(path, data_only=True)
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)   # 메모리 절약
     sheets = []
     for ws in wb.worksheets:
+        if any(k in ws.title for k in ('견본일지', '대장', '체크항목', '공정도', '가속실험')):
+            sheets.append((ws.title, []))
+            continue
         rows = []
         for r in ws.iter_rows():
             toks = [c.value for c in r if c.value is not None and str(c.value).strip() != '']
@@ -68,25 +71,51 @@ def rows_from_text(text):
 
 
 def rows_from_pdf(path):
-    txt = subprocess.run(['pdftotext', '-layout', path, '-'], capture_output=True, text=True).stdout
+    try:
+        txt = subprocess.run(['pdftotext', '-layout', path, '-'], capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        txt = ''
     ocr = False
     if len(re.sub(r'\s', '', txt)) < 50:  # 스캔본 → OCR
         txt, ocr = ocr_file(path), True
     return rows_from_text(txt), ocr
 
 
+def pdf_to_pngs(path, dpi=300, max_pages=3, timeout=120):
+    """PDF → PNG (별도 프로그램 pdftoppm 사용: 실패해도 앱은 꺼지지 않음)"""
+    import tempfile, glob
+    out = tempfile.mkdtemp()
+    try:
+        subprocess.run(['pdftoppm', '-r', str(dpi), '-png', '-l', str(max_pages), path, os.path.join(out, 'p')],
+                       capture_output=True, timeout=timeout)
+    except Exception:
+        return []
+    return sorted(glob.glob(os.path.join(out, 'p*.png')))
+
+
+def _tess_langs():
+    try:
+        r = subprocess.run(['tesseract', '--list-langs'], capture_output=True, text=True, timeout=20)
+        return 'kor+eng' if 'kor' in (r.stdout + r.stderr) else 'eng'
+    except Exception:
+        return None
+
+
 def ocr_file(path):
-    import pytesseract
-    from PIL import Image
-    imgs = []
-    if path.lower().endswith('.pdf'):
-        import pdfplumber
-        with pdfplumber.open(path) as pdf:
-            imgs = [p.to_image(resolution=300).original for p in pdf.pages]
-    else:
-        imgs = [Image.open(path)]
-    langs = 'kor+eng' if 'kor' in pytesseract.get_languages() else 'eng'
-    return '\n'.join(pytesseract.image_to_string(im, lang=langs, config='--psm 6') for im in imgs)
+    """스캔 PDF/이미지 글자 인식 — tesseract 를 별도 프로그램으로 실행 (메모리·충돌로부터 앱 보호)"""
+    langs = _tess_langs()
+    if not langs:
+        return ''
+    imgs = pdf_to_pngs(path, 300, 3) if path.lower().endswith('.pdf') else [path]
+    texts = []
+    for im in imgs:
+        try:
+            r = subprocess.run(['tesseract', im, 'stdout', '-l', langs, '--psm', '6'],
+                               capture_output=True, text=True, timeout=120)
+            texts.append(r.stdout)
+        except Exception:
+            pass
+    return '\n'.join(texts)
 
 
 # ---------- 행 → 값 추출 ----------
