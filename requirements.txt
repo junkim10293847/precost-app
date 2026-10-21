@@ -1,7 +1,10 @@
-streamlit>=1.36
-pandas
-openpyxl
+# 버전 고정 (2026-10-21): 최신 버전 자동 설치로 앱이 꺼지는 문제 방지
+streamlit>=1.45,<1.51
+pandas>=2.2,<3
+numpy>=1.26,<2.4
+pyarrow>=18,<23
+openpyxl>=3.1,<3.2
 xlrd==2.0.1
-pdfplumber
-pytesseract
-Pillow
+pdfplumber>=0.11,<0.12
+pytesseract==0.3.13
+Pillow>=10,<12
