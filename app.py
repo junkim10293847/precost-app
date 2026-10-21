@@ -162,6 +162,11 @@ NUM = ['원재료비', '부재료비', '가공비', '마진', '최종견적']
 KEY = {'원재료비': 'raw', '부재료비': 'pack', '가공비': 'proc', '마진': 'margin', '최종견적': 'final'}
 
 
+def _s(v):
+    """표에서 돌아온 값(None/NaN 포함)을 안전한 문자열로"""
+    return '' if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+
+
 def _ival(v):
     return None if v is None or (isinstance(v, float) and pd.isna(v)) else int(v)
 
@@ -182,7 +187,7 @@ with tab0:
         pos = min(pos, len(idxs) - 1)
         labels = [f"[{rows[i]['no']}] {rows[i]['name'][:40]}" for i in idxs]
         nav1, nav2, nav3 = st.columns([1, 6, 1])
-        if nav1.button('◀ 이전', disabled=pos == 0, use_container_width=True):
+        if nav1.button('◀ 이전', disabled=pos == 0):
             st.session_state['rv_pos'] = pos - 1
             st.rerun()
         sel = nav2.selectbox(f'품목 ({pos + 1} / {len(idxs)})', range(len(idxs)), index=pos,
@@ -190,7 +195,7 @@ with tab0:
         if sel != pos:
             st.session_state['rv_pos'] = sel
             st.rerun()
-        if nav3.button('다음 ▶', disabled=pos >= len(idxs) - 1, use_container_width=True):
+        if nav3.button('다음 ▶', disabled=pos >= len(idxs) - 1):
             st.session_state['rv_pos'] = pos + 1
             st.rerun()
 
@@ -220,8 +225,8 @@ with tab0:
                               key=f'rv_ox_{i}_{ver}')
                 chk = st.checkbox('✔ 견적서와 대조해 확인 완료', value=bool(r.get('checked')), key=f'rv_chk_{i}_{ver}')
                 b1, b2 = st.columns(2)
-                save_one = b1.form_submit_button('💾 저장', use_container_width=True)
-                save_next = b2.form_submit_button('💾 저장 후 다음 ▶', type='primary', use_container_width=True)
+                save_one = b1.form_submit_button('💾 저장')
+                save_next = b2.form_submit_button('💾 저장 후 다음 ▶', type='primary')
             if save_one or save_next:
                 ch = []
                 for col in NUM:
@@ -280,7 +285,7 @@ with tab0:
                     st.dataframe(df_s.style.apply(
                         lambda row: ['background-color:#FFF2CC' if any(k in ' '.join(row.values) for k in kw) else ''
                                      for _ in row], axis=1),
-                        use_container_width=True, height=620)
+                        height=620)
                     st.caption('노란 줄 = 합계·원가·마진·출고가 등 금액 줄')
                 else:
                     st.warning(data)
@@ -307,7 +312,7 @@ with tab1:
 
     with st.form(f"edit_{st.session_state['ver']}"):
         edited = st.data_editor(
-            view, use_container_width=True, height=540, hide_index=True,
+            view, height=540, hide_index=True,
             disabled=['구분', 'no', '제품명', '거래처', '단가', '메모'],
             column_config={
                 '확인': st.column_config.CheckboxColumn('확인', help='내용을 확인했으면 체크 → 노란색 해제', width='small'),
@@ -329,8 +334,8 @@ with tab1:
             r = rows[idx]
             orig = df.loc[idx]
             # 1) 견적서 파일 변경 → 재추출
-            new_file = er['매칭 견적서'] or ''
-            if new_file != (orig['매칭 견적서'] or ''):
+            new_file = _s(er['매칭 견적서'])
+            if new_file != _s(orig['매칭 견적서']):
                 r = reselect_file(r, path_by_name.get(new_file), cache)
                 rows[idx] = r
                 n_file += 1
@@ -338,8 +343,7 @@ with tab1:
                 # 2) 숫자 수정 (원래 값과 다를 때만, 변경 이력 기록)
                 for col in NUM:
                     nv, ov = er[col], orig[col]
-                    nv = None if pd.isna(nv) else int(nv)
-                    ov = None if pd.isna(ov) else int(ov)
+                    nv, ov = _ival(nv), _ival(ov)
                     if nv != ov:
                         r[KEY[col]] = nv
                         r.setdefault('edits', []).append(f"{col} {ov if ov is not None else '-'}→{nv if nv is not None else '-'}")
@@ -348,8 +352,8 @@ with tab1:
                     r['status'] = er['O/X']
                     r.setdefault('edits', []).append(f"O/X {orig['O/X']}→{er['O/X']}")
                     n_edit += 1
-            if (er['담당자'] or '') != (orig['담당자'] or ''):
-                r['owner'] = er['담당자'] or '미지정'
+            if _s(er['담당자']) != _s(orig['담당자']):
+                r['owner'] = _s(er['담당자']) or '미지정'
                 r['owner_src'] = '수동'
                 n_edit += 1
             if bool(er['확인']) != bool(orig['확인']):
@@ -381,7 +385,7 @@ with tab3:
         k[0].metric('사후원가 매칭', f"{(cdf['사후원가'].notna()).sum()} / {len(cdf)}")
         k[1].metric('원가 5% 초과 상승', int((cdf['차이율%'] > 5).sum()))
         k[2].metric('사후 적자 품목', int((cdf['사후이익률%'] < 0).sum()))
-        st.dataframe(cdf.sort_values('차이율%', ascending=False, na_position='last'), use_container_width=True,
+        st.dataframe(cdf.sort_values('차이율%', ascending=False, na_position='last'),
                      hide_index=True, height=480)
 
 st.divider()
