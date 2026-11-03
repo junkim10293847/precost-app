@@ -1,0 +1,33 @@
+# 앱 자동 깨우기: 무료 Streamlit 은 12시간 접속이 없으면 잠들기 때문에
+# 평일 출근 전(07:10)과 퇴근 무렵(18:40, 한국 시간)에 앱을 열어 깨워 둔다.
+# GitHub 화면 Actions → "앱 자동 깨우기" → Run workflow 로 바로 실행할 수도 있다.
+name: 앱 자동 깨우기
+
+on:
+  schedule:
+    - cron: "10 22 * * 0-4"   # 한국 시간 월~금 07:10
+    - cron: "40 9 * * 1-5"    # 한국 시간 월~금 18:40
+  workflow_dispatch:
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 브라우저 준비
+        run: |
+          pip install playwright==1.48.0
+          python -m playwright install --with-deps chromium
+      - name: 앱 열기·깨우기
+        run: python tools/wake_app.py
+      - name: 실패 화면 저장
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wake-fail-screenshot
+          path: wake_fail.png
+          if-no-files-found: ignore

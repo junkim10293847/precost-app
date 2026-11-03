@@ -127,6 +127,8 @@
 | 10-21 18:55 | 재배포 때 Main file 이 **core.py** 로 잡혀 화면 미표시 → core.py 에서 app.py 실행 연결 |
 | 10-21 ~19:20 | 앱 삭제·재배포, Secrets 재등록, **Streamlit 1.50.0 로 동작 확인**(로그인 안내 화면까지 확인) |
 | 10-27 | 사용자 "앱 가동이 안 된다" → 코드 변경 없음 확인, 잠자기(12시간 무접속) 가능성 안내. **원인 확인 미완료** |
+| 10-30, 11-03 | "오류" 문의 2회 모두 원인은 **잠자기**(12시간 무접속). 깨우기 버튼으로 정상 복구 확인 |
+| 11-03 | **자동 깨우기 추가**: `.github/workflows/wake-app.yml` + `tools/wake_app.py`. 평일 07:10·18:40(한국 시간) GitHub Actions 가 앱을 열고 잠들어 있으면 깨움. 수동 실행: Actions → 앱 자동 깨우기 → Run workflow. 저장소에 60일간 변경이 없으면 GitHub 이 예약 실행을 멈추므로 안내 메일이 오면 Enable workflow 클릭 |
 
 현재 Streamlit Cloud 설정(사용자 계정 `junkim10293847`):
 - 앱 목록 표시: `precost-app · main · core.py`
